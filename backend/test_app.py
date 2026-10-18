@@ -1588,5 +1588,55 @@ class NormalizeOriginUnitTest(unittest.TestCase):
         self.assertTrue(is_origin_allowed("https://any.example", ["*"]))
 
 
+class SchemaETagCachingTest(unittest.TestCase):
+    """ETag and caching headers for /api/schemas endpoints (issue #804)."""
+
+    def test_list_schemas_returns_200_with_etag(self):
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get("/api/schemas")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers.get("ETag"))
+        self.assertIn("schemas", response.get_json())
+
+    def test_list_schemas_returns_304_on_matching_etag(self):
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            first = client.get("/api/schemas")
+            etag = first.headers.get("ETag")
+            second = client.get("/api/schemas", headers={"If-None-Match": etag})
+        self.assertEqual(second.status_code, 304)
+
+    def test_get_schema_returns_404_for_unknown_hash(self):
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get("/api/schemas/" + "0" * 64)
+        self.assertEqual(response.status_code, 404)
+
+    def test_get_schema_returns_200_with_cache_headers(self):
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            first = client.get("/api/schemas")
+            schemas = first.get_json()["schemas"]
+            if not schemas:
+                self.skipTest("no schemas available")
+            h = schemas[0]["schemaHash"]
+            response = client.get(f"/api/schemas/{h}")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers.get("ETag"))
+        self.assertEqual(
+            response.headers.get("Cache-Control"),
+            "public, max-age=86400, immutable",
+        )
+
+    def test_get_schema_returns_304_on_matching_etag(self):
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            first = client.get("/api/schemas")
+            schemas = first.get_json()["schemas"]
+            if not schemas:
+                self.skipTest("no schemas available")
+            h = schemas[0]["schemaHash"]
+            detail = client.get(f"/api/schemas/{h}")
+            etag = detail.headers.get("ETag")
+            second = client.get(f"/api/schemas/{h}", headers={"If-None-Match": etag})
+        self.assertEqual(second.status_code, 304)
+
+
 if __name__ == "__main__":
     unittest.main()

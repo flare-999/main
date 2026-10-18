@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import functools
 import ipaddress
+import hashlib
 import json
 import logging
 import os
@@ -1788,7 +1789,17 @@ def create_app() -> Flask:
     @app.get("/api/schemas")
     def list_schemas():
         schemas = discover_schemas()
-        return jsonify({"ok": True, "schemas": schemas})
+        hashes = sorted(
+            s.get("schemaHash", "")
+            for s in schemas
+            if isinstance(s, dict) and s.get("schemaHash")
+        )
+        etag = '"' + hashlib.sha256("".join(hashes).encode()).hexdigest() + '"'
+        if request.headers.get("If-None-Match") == etag:
+            return "", 304
+        response = jsonify({"ok": True, "schemas": schemas})
+        response.headers["ETag"] = etag
+        return response
 
     @app.get("/api/schemas/<schema_hash>")
     def get_schema(schema_hash: str):
@@ -1797,7 +1808,16 @@ def create_app() -> Flask:
         schema = resolve_schema(schema_hash)
         if schema is None:
             return jsonify({"error": "schema not found"}), 404
-        return jsonify({"ok": True, "schema": schema})
+        etag = '"' + schema_hash.lower() + '"'
+        if request.headers.get("If-None-Match") == etag:
+            resp = app.response_class("", status=304)
+            resp.headers["ETag"] = etag
+            resp.headers["Cache-Control"] = "public, max-age=86400, immutable"
+            return resp
+        response = jsonify({"ok": True, "schema": schema})
+        response.headers["ETag"] = etag
+        response.headers["Cache-Control"] = "public, max-age=86400, immutable"
+        return response
 
     @app.post("/api/verify/selective-disclosure")
     def verify_selective_disclosure():
