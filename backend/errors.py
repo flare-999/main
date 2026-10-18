@@ -51,6 +51,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 VALIDATION_ERROR = "VALIDATION_ERROR"
+MALFORMED_INPUT = "MALFORMED_INPUT"
+OVERSIZED_INPUT = "OVERSIZED_INPUT"
+classify_cli_error = lambda x: x
 """Legacy client-validation code retained for compatibility (400)."""
 
 PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"

@@ -1,6 +1,13 @@
 """Horizon-backed Stellar transaction status checks for registration reconcile."""
 
 from __future__ import annotations
+from dataclasses import dataclass
+
+@dataclass
+class TxVerificationResult:
+    status: str = ""
+    reason: str = ""
+
 
 import json
 import logging
