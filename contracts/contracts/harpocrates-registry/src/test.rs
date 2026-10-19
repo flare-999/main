@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use soroban_sdk::String;
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Events as _, Ledger},
@@ -84,6 +85,13 @@ fn silent_public_inputs(
 
 fn expected_domain_tag_test(env: &Env) -> BytesN<32> {
     expected_domain_tag(env)
+}
+
+#[test]
+fn returns_cargo_package_version() {
+    let env = Env::default();
+    let expected = String::from_str(&env, env!("CARGO_PKG_VERSION"));
+    assert_eq!(version(env), expected);
 }
 
 #[test]
