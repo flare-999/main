@@ -323,4 +323,278 @@ The rotation state is persisted and can be inspected via `get_verifier_state`.
 ### Rollback and troubleshooting
 
 - Activation is rejected before the configured activation ledger.
-- Rollback is rejected once the rollback window clo
+- Rollback is rejected once the rollback window closes.
+- If the pending verifier fails validation or causes operational issues, revert to the previous verifier within the rollback window.
+- If you need to reconfigure the verifier after the rotation completes, call `set_verifier` again to reset the rotation state and install a fresh verifier.
+
+## Admin Transfer
+
+Admin control uses a two-step transfer:
+
+1. The current admin calls `propose_admin`, which creates or replaces the pending
+   admin proposal.
+2. The pending admin calls `accept_admin` to complete the transfer.
+
+The current admin may call `cancel_admin_transfer` before acceptance. Proposals,
+cancellations, and acceptances emit `["admin", "propose"]`,
+`["admin", "cancel"]`, and `["admin", "accept"]` lifecycle events.
+
+### Storage compatibility
+
+The existing `DataKey::Admin` value and all existing record layouts are
+unchanged. `DataKey::PendingAdmin` is appended as a new, independent persistent
+storage key, so upgrading an initialized contract preserves its current admin
+and all existing registry data. An upgraded contract starts with no pending
+admin proposal.
+
+## Admin and issuer role separation (storage V2)
+
+Registry administration and Tier 3 issuance are disjoint roles. The admin can
+manage protocol state, credential roots, verifiers, proofs, and the issuer
+allowlist, but an active admin address cannot be granted issuer authority.
+An active issuer cannot be proposed or accepted as admin. Both rejected paths
+return the stable, privacy-safe `RoleConflict` contract error (`#53`); no media,
+metadata, witness, proof, or key material is included.
+
+`is_admin(address)` and `is_issuer(address)` expose the effective role without
+requiring authorization. They are read-only and accept arbitrary public
+addresses. `get_schema_version()` returns the storage schema version.
+
+### V1-to-V2 migration
+
+Fresh deployments initialize directly at storage V2. For an existing contract,
+the current admin calls `upgrade_storage` once:
+
+```text
+upgrade_storage(admin)
+```
+
+The migration is idempotent and narrow. It does not rewrite proof records,
+video/nullifier indexes, verifier state, credential roots, schemas, or issuer
+metadata. If the current admin has an active issuer record, only that record's
+`active` flag is changed to `false`; proof records and all other issuer records
+remain intact. Existing `DataKey::Admin`, `DataKey::Issuer`, and evidence layouts
+are unchanged. A successful migration emits the existing `IssuerRevoked` event
+(for the conflicting authority only) and `SchemaUpgraded { 1, 2 }`; no sensitive
+payload is emitted.
+
+Call `upgrade_storage` before enabling the V2 artifact in production. If code
+is rolled back to a prior Wasm artifact, stored evidence remains readable, but
+that older artifact does not enforce disjoint roles and can grant the admin an
+issuer record again. Re-upgrade and revoke that issuer record before resuming
+issuer operations.
+
+## Timelocked Administration
+
+High-impact registry administrative actions (such as setting the primary verifier, revoking an issuer, setting proof TTL, and revoking credential roots) can be governed through a timelock mechanism to ensure transparency and community notice before execution. The workflow supports advance notice, admin cancellation, open execution after delay expiry, and admin emergency execution when immediate remediation is required.
+
+See [TIMELOCK.md](TIMELOCK.md) for action kinds, payload and target semantics, delays, cancellation and emergency rules, error codes, and events.
+
+## Emergency Pause
+
+Registration can be paused per identity tier without affecting reads or
+unaffected tiers. See `EMERGENCY_PAUSE.md` for the domain model, authorization
+matrix, event schema, migration/rollback notes, and troubleshooting.
+
+## Tier 1 Verifier
+
+`register_anonymous` is the development/demo boundary.
+
+`register_anonymous_verified` is the real Tier 1 entrypoint. It checks public
+inputs, requires an active credential root, prevents nullifier reuse, then calls
+the configured verifier contract:
+
+```text
+verify_proof(public_inputs, proof)
+```
+
+See `VERIFIER_INTEGRATION.md` for the UltraHonk verifier deployment plan.
+
+The verifier's verdict is enforced: `verify_external_proof` returning `false`
+fails the registration with `InvalidProof` (`#7`).
+
+Current Testnet verifier:
+
+```text
+CCP2EQPKT5XAYTOARX3LGHNMJ37A6W2WY3H54MRIHEZVTVAZZPUSGZQJ
+```
+
+## Receipt Digest Commitment (#337)
+
+A signed verification receipt can be anchored on-chain without storing the
+receipt: the caller commits `sha256(canonical_json(receipt))` together with a
+P-256 attestation from an admin-managed receipt-signing key. The attestation
+signs a 129-byte domain-separated preimage that binds the contract address,
+`proof_id`, and the digest, so a signature cannot be replayed against another
+deployment, proof, or digest. One immutable commitment per proof; retries of
+the same digest are idempotent. Registration pauses do not gate receipt
+commits or signer management.
+
+| Function | Auth |
+|----------|------|
+| `add_receipt_signer` / `revoke_receipt_signer` | admin only (max 8 active keys) |
+| `commit_receipt_digest` | admin, the proof's tier-2 source, or its tier-3 issuer (tier 1: admin only) |
+| `get_receipt_commitment` / `get_receipt_signer` | public |
+
+See `RECEIPT_COMMITMENT.md` for the preimage layout, guard order, errors,
+events, and test-vector provenance.
+
+## Events
+
+The registry emits typed Soroban events with `#[contractevent]`:
+
+```text
+["proof", "reg", proof_id]        => video_hash, tier, status
+["proof", "revoke", proof_id]     => status
+["issuer", "add", issuer]         => metadata_hash
+["issuer", "revoke", issuer]      => {}
+["issuer", "rotate", previous_issuer] => replacement_issuer, rotated_at, grace_expires_at, grace_secs
+["issuer", "grace", issuer]       => replacement_issuer, grace_expires_at
+["verif", "set", verifier]        => {}
+["credroot", "add", root]         => metadata_hash, issued_at
+["credroot", "revoke", root]      => {}
+["proof", "history", proof_id]    => action, timestamp, actor, reason_code
+["admin", "propose", pending]     => current_admin
+["admin", "cancel", pending]      => current_admin
+["admin", "accept", new_admin]    => previous_admin
+["revroot", "set", root]          => {}
+["nonrev", "check", root]         => nullifier, revocation_root
+["pause", "set", domain]          => paused_by, paused_at, expires_at
+["pause", "clear", domain]        => unpaused_by, unpaused_at
+["guardian", "set", guardian]     => {}
+["dispute", "open", dispute_id]   => proof_id, reason, reporter_hash, commitment_hash, respond_deadline
+["dispute", "respond", dispute_id] => proof_id, response_commitment, resolve_deadline
+["dispute", "resolve", dispute_id] => proof_id, resolved_at
+["dispute", "dismiss", dispute_id] => proof_id, resolved_at
+["dispute", "supersede", dispute_id] => proof_id, superseded_by, resolved_at
+["verif", "schedule"]             => active_verifier, pending_verifier, activation_ledger, overlap_window, rollback_window
+["verif", "activate"]             => active_verifier, previous_verifier, rollback_window_end
+["verif", "rollback"]             => active_verifier, previous_verifier
+["receipt", "commit", proof_id]   => receipt_digest, tier, public_key, committed_at
+["signer", "add", public_key]     => added_at
+["signer", "revoke", public_key]  => revoked_at
+```
+
+For every successful proof registration, `proof/reg` is emitted before the
+corresponding `proof/history` event. Batch registration emits that same pair
+for each derived proof in input order. Rejected registrations emit neither
+event, so indexers can treat the ordered pair as the registration boundary.
+
+## Lifecycle History (#90)
+
+Every proof carries an append-only history of lifecycle transitions. History
+entries are privacy-safe: they contain only `proof_id`, `action`, `timestamp`,
+`actor`, and `reason_code`. No `video_hash`, `metadata_hash`, `nullifier`, or
+proof bytes are ever stored in history or emitted in history events.
+
+### Actions
+
+```text
+Registered  = 1
+Verified    = 2
+Revoked     = 3
+Expired     = 4
+Corrected   = 5
+TtlUpdated  = 6
+```
+
+### Bounds
+
+- `MAX_HISTORY_ENTRIES_PER_PROOF = 256` caps total entries per proof.
+- `MAX_HISTORY_LIMIT = 50` caps the maximum number of entries returned by a
+  single `get_proof_history` call.
+
+### Query
+
+```text
+get_proof_history(proof_id, offset, limit) -> Vec<ProofHistoryEntry>
+get_proof_history_count(proof_id) -> u32
+```
+
+`offset` is zero-based. `limit` must be `<= MAX_HISTORY_LIMIT`. Entries are
+returned in chronological order.
+
+### State Transitions
+
+| Function | Authorization | Effect |
+|----------|---------------|--------|
+| `verify_proof` | Admin | Records a verification event in history. |
+| `expire_proof` | Admin | Sets `status = STATUS_EXPIRED` and records history. Rejects if already expired. |
+| `correct_proof` | Admin | Updates `metadata_hash` and records history. Rejects if metadata is unchanged. |
+
+All registration functions and `revoke_proof` automatically record history.
+
+### Privacy Properties
+
+- History entries contain no sensitive proof material.
+- Reason codes are bounded `u32` values (`0..=255`); free-text reasons are not accepted.
+- The `actor` field records the address that authorized the transition, or `None` for anonymous registrations.
+- On-chain history events use the topic `["proof", "history", proof_id]` so indexers can filter without reading contract storage.
+
+### Backward Compatibility
+
+Proofs registered before this feature have zero history entries. `get_proof_history`
+returns an empty vector for such proofs. The existing `ProofRecord` schema is unchanged.
+
+## Dispute And Supersession
+
+`open_dispute`, `respond_dispute`, `resolve_dispute`, `dismiss_dispute`,
+`supersede_dispute`, `get_dispute`, and `get_open_dispute_count` add a bounded,
+auditable dispute/correction state machine. Disputes never modify or delete the
+disputed proof and are independent of revocation - a disputed proof can still
+report `Valid` from `get_proof_status`. Reporter identity is stored only as a
+caller-supplied `reporter_hash` commitment, and events carry commitment hashes
+and timestamps only.
+
+Bounds: `MAX_OPEN_DISPUTES_PER_PROOF = 4`, `REPORTER_COOLDOWN_SECS = 86400`,
+`RESPOND_DEADLINE_SECS = 604800`, `RESOLVE_DEADLINE_SECS = 1209600`. All new
+storage keys (`Dispute`, `ProofOpenDisputeCount`, `ReporterCooldown`) are
+additive, so upgrading requires no migration and rollback is a plain wasm
+redeploy.
+
+See [DISPUTE.md](DISPUTE.md) for the state machine, error codes, threat notes,
+and migration/rollback details.
+
+## Contract Error ABI (#344)
+
+`contracts/ERROR_ABI.md` publishes the stable error ABI (`hpx-err/1`) for
+`RegistryError`: every discriminant, its variant name, its failure class
+(`malformed`, `oversized`, `expired`, `revoked`, `unsupported`, `dependency`,
+plus `auth`, `conflict`, `resource`, `state`), and whether the same call may be
+retried once an external condition clears.
+
+Codes `1..=80` are frozen and append-only: a new failure takes the next unused
+number, and an existing code is never renumbered or reused. The ABI describes
+revert values only. It adds no storage keys, changes no entrypoint signature,
+and requires no migration.
+
+Failure responses stay privacy-safe: a revert is reported as a code, never as a
+dump of the offending input. Proof bytes, public inputs, witnesses, nullifiers,
+media, credentials, signatures, and private keys are never part of an error and
+never logged, and a rejected call still emits no lifecycle event.
+
+`contracts/harpocrates-registry/src/test_error_abi.rs` reads the document at
+compile time and fails if a variant is renamed, renumbered, dropped, duplicated,
+or assigned a class outside the documented set:
+
+```bash
+cd contracts
+cargo test -p harpocrates-registry error_abi -- --nocapture
+```
+
+## Scripts
+
+PowerShell helpers live in `scripts/`:
+
+```text
+add-issuer.ps1
+add-credential-root.ps1
+register-anonymous-verified.ps1
+register-source.ps1
+register-seal.ps1
+revoke-credential-root.ps1
+set-verifier.ps1
+schedule-verifier-rotation.ps1
+activate-verifier-rotation.ps1
+rollback-verifier-rotation.ps1
+```

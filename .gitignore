@@ -4,3 +4,7 @@ zk/bench/results/
 
 __pycache__/
 *.py[cod]
+.hypothesis/
+.pytest_cache/
+config.bat
+node_modules
