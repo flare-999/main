@@ -400,6 +400,7 @@ export class BatchVerifier {
         file: item.file,
         videoHash,
         wallet: this.config.wallet,
+        signal,
       })
 
       if (signal.aborted) {

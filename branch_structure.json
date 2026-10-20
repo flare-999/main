@@ -1,0 +1,27 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "feat/issue-670-feat-cli-add-a-register-command-for-source-and",
+    "feat/issue-675-feat-backend-filter-webhook-deliveries-by",
+    "feat/issue-717-feat-contracts-expose-the-contract-crate",
+    "fix/issue-682-fix-backend-create-the-job-storage-directory",
+    "main",
+    "origin"
+  ],
+  "parent": {
+    "feat/issue-670-feat-cli-add-a-register-command-for-source-and": "main",
+    "feat/issue-675-feat-backend-filter-webhook-deliveries-by": "main",
+    "feat/issue-717-feat-contracts-expose-the-contract-crate": "main",
+    "fix/issue-682-fix-backend-create-the-job-storage-directory": "main",
+    "main": null,
+    "origin": "main"
+  },
+  "order": [
+    "main",
+    "feat/issue-670-feat-cli-add-a-register-command-for-source-and",
+    "feat/issue-675-feat-backend-filter-webhook-deliveries-by",
+    "feat/issue-717-feat-contracts-expose-the-contract-crate",
+    "fix/issue-682-fix-backend-create-the-job-storage-directory",
+    "origin"
+  ]
+}
